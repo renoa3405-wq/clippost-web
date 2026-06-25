@@ -1,31 +1,15 @@
 import { NextResponse } from 'next/server';
 
+// Handle POST untuk webhook Lynk.id
 export async function POST(request: Request) {
-  try {
-    // 1. Coba ambil sebagai text dulu agar tidak gagal parsing
-    const rawBody = await request.text();
-    
-    // 2. Log semua header biar kita tahu apa yang dikirim Lynk.id
-    const headers: any = {};
-    request.headers.forEach((value, key) => { headers[key] = value; });
-    console.log("HEADERS DITERIMA:", headers);
-    console.log("RAW BODY DITERIMA:", rawBody);
+  const body = await request.text();
+  console.log("=== LOG DARI POST ===");
+  console.log("BODY:", body);
+  return NextResponse.json({ status: "POST Diterima" });
+}
 
-    // 3. Coba paksa jadi JSON kalau bisa
-    let body;
-    try {
-      body = JSON.parse(rawBody);
-    } catch (e) {
-      body = "Bukan JSON";
-    }
-
-    return NextResponse.json({ 
-      message: "Data diterima",
-      received_content: rawBody,
-      headers: headers 
-    }, { status: 200 });
-
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
+// Handle GET supaya kita bisa tes via browser
+export async function GET() {
+  console.log("=== LOG DARI GET ===");
+  return NextResponse.json({ status: "API Berjalan" });
 }
