@@ -1,45 +1,47 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import crypto from 'crypto';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY! 
 );
 
-export async function GET() {
-  return NextResponse.json({ message: "Webhook is running" });
-}
-
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    // LOG INI PENTING: Kita print semua data yang masuk biar Bos bisa cek di Vercel Log
-    console.log("DATA DARI LYNK.ID:", JSON.stringify(body));
+    const signature = request.headers.get("x-lynk-signature");
+    
+    // 1. Ambil data penting untuk verifikasi
+    const data = body.data?.message_data;
+    const refId = data?.refId;
+    const amount = data?.totals?.grandTotal?.toString();
+    const messageId = body.message_id;
+    const merchantKey = process.env.LYNK_MERCHANT_KEY!;
 
-    // Sesuaikan field berdasarkan hasil log nanti
-    const status = body.status || body.transaction_status || body.payment_status;
-    const emailPembeli = body.customer_email || body.email || body.customer?.email;
+    // 2. Verifikasi Signature (Sesuai dokumentasi)
+    const signatureString = amount + refId + messageId + merchantKey;
+    const calculatedSignature = crypto
+      .createHash('sha256')
+      .update(signatureString)
+      .digest('hex');
 
-    if (status === 'success' || status === 'settlement' || status === 'paid') {
-      if (!emailPembeli) {
-        return NextResponse.json({ error: "Email tidak ditemukan" }, { status: 400 });
-      }
+    if (signature !== calculatedSignature) {
+      return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+    }
 
-      const emailBersih = emailPembeli.trim().toLowerCase();
+    // 3. Proses Pembayaran
+    if (body.event === "payment.received" && data.message_action === "SUCCESS") {
+      const email = data.customer.email.trim().toLowerCase();
 
-      const { error } = await supabaseAdmin
+      await supabaseAdmin
         .from('users')
-        .upsert({ 
-          email: emailBersih, 
-          registered_at: new Date().toISOString(),
-          is_premium: true 
-        }, { onConflict: 'email' }); 
+        .upsert({ email, registered_at: new Date().toISOString(), is_premium: true }, { onConflict: 'email' });
 
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
       return NextResponse.json({ message: "Sukses" }, { status: 200 });
     }
 
-    return NextResponse.json({ message: "Status belum sukses" }, { status: 200 });
+    return NextResponse.json({ message: "Event diabaikan" }, { status: 200 });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
