@@ -6,6 +6,7 @@ export default function AdminKnowledgeBase() {
   const [category, setCategory] = useState("FAQ");
   const [pattern, setPattern] = useState("");
   const [answer, setAnswer] = useState("");
+  const [password, setPassword] = useState(""); // State baru untuk password
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -18,7 +19,7 @@ export default function AdminKnowledgeBase() {
       const res = await fetch("/api/admin/kb", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category, pattern, answer, confidence: 100, active: true }),
+        body: JSON.stringify({ category, pattern, answer, password, confidence: 100, active: true }),
       });
 
       const data = await res.json();
@@ -39,11 +40,24 @@ export default function AdminKnowledgeBase() {
   return (
     <div className="min-h-screen bg-[#0C0C0E] text-[#FAFAFA] p-8 font-sans">
       <div className="max-w-2xl mx-auto bg-[#18181B] border border-[#3F3F46] rounded-xl p-8 shadow-xl">
-        <h1 className="text-2xl font-bold text-[#0D9488] mb-2">Pusat Kendali AI</h1>
-        <p className="text-[#A1A1AA] mb-8 text-sm">Tambahkan pengetahuan baru (Knowledge Base) agar AI semakin pintar.</p>
+        <h1 className="text-2xl font-bold text-[#0D9488] mb-2">Pusat Kendali AI (Protected)</h1>
+        <p className="text-[#A1A1AA] mb-8 text-sm">Tambahkan pengetahuan baru. Hanya admin resmi yang memiliki akses ini.</p>
 
         <form onSubmit={handleSimpan} className="flex flex-col gap-6">
           
+          {/* PASSWORD RAHASIA */}
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-bold text-[#F43F5E] uppercase tracking-wider">Admin Secret Password</label>
+            <input 
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Masukkan password rahasia admin..."
+              className="bg-[#27272A] border border-[#F43F5E] rounded-lg p-3 text-white outline-none focus:ring-2 focus:ring-[#F43F5E]"
+              required
+            />
+          </div>
+
           {/* KATEGORI */}
           <div className="flex flex-col gap-2">
             <label className="text-sm font-bold text-[#A1A1AA] uppercase tracking-wider">Kategori</label>
@@ -89,7 +103,7 @@ export default function AdminKnowledgeBase() {
             disabled={loading}
             className={`mt-4 p-4 rounded-lg font-bold text-black ${loading ? 'bg-[#52525B]' : 'bg-[#0D9488] hover:bg-[#0f766e]'} transition-colors`}
           >
-            {loading ? "Menyuntikkan ke Database..." : "💾 Simpan ke Otak AI"}
+            {loading ? "Memverifikasi & Menyuntikkan ke Database..." : "💾 Simpan ke Otak AI"}
           </button>
 
           {/* PESAN SUKSES/GAGAL */}

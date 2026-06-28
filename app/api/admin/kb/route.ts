@@ -4,7 +4,7 @@ import OpenAI from 'openai';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY! // Wajib pakai Service Role agar punya hak Admin
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -12,16 +12,20 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { category, pattern, answer, confidence = 100, active = true } = body;
+    const { category, pattern, answer, password, confidence = 100, active = true } = body;
+
+    // 1. Validasi Password Rahasia
+    const secretPassword = process.env.ADMIN_SECRET_PASSWORD;
+    if (!password || password !== secretPassword) {
+      return NextResponse.json({ error: "Akses Ditolak! Password salah atau tidak disertakan." }, { status: 401 });
+    }
 
     if (!category || !pattern || !answer) {
       return NextResponse.json({ error: "Category, pattern, dan answer wajib diisi!" }, { status: 400 });
     }
 
-    // 1. Jadikan Pattern + Category sebagai "Target Tembakan" Vektor
+    // 2. Buat Vektor dari Pattern
     const textToEmbed = `Kategori: ${category}\nKonteks Pertanyaan: ${pattern}`;
-
-    // 2. Minta OpenAI menerjemahkan teks tersebut jadi Vektor (Angka)
     const embeddingResponse = await openai.embeddings.create({
       model: 'text-embedding-3-small',
       input: textToEmbed,
