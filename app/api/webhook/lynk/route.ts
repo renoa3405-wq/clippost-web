@@ -1,46 +1,50 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-// Pastikan Environment Variable Supabase Bos sudah terpasang di Vercel
+// 1. KUNCI MASTER (Tanpa kompromi ke Anon Key)
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; // Wajib Service Role Key
+const supabaseAdmin = createClient(supabaseUrl, supabaseKey);
 
 export async function POST(request: Request) {
   try {
-    // 1. Tangkap datanya sebagai JSON (bukan text lagi)
     const body = await request.json();
     
-    // 2. Filter: Pastikan ini benar-benar event pembayaran yang sukses
-    if (body.event === "payment.received" && body.data.message_action === "SUCCESS") {
+    // 🚨 DETEKTOR UTAMA: Apapun yang dikirim Lynk, cetak di log Vercel!
+    console.log("🔥 WEBHOOK MASUK DARI LYNK:", JSON.stringify(body, null, 2));
+    
+    // 2. Filter Event
+    if (body.event === "payment.received" && body.data?.message_action === "SUCCESS") {
       
-      // 3. Ekstrak email dari dalam payload Lynk.id
-      const customerEmail = body.data.message_data.customer.email;
+      const customerEmail = body.data?.message_data?.customer?.email;
 
       if (customerEmail) {
-        // 4. Tembakkan email tersebut ke tabel users_premium di Supabase
-        const { data, error } = await supabase
+        // Gunakan supabaseAdmin yang sudah punya kekuatan Kunci Master
+        const { data, error } = await supabaseAdmin
           .from('users_premium')
           .insert([
-            { email: customerEmail } // Pastikan nama kolom 'email' sesuai dengan yang ada di tabel Bos
+            { email: customerEmail }
           ]);
 
         if (error) {
-          console.error("Gagal insert ke Supabase:", error);
+          console.error("❌ Gagal insert ke Supabase:", error.message);
         } else {
           console.log(`✅ BERHASIL: Email ${customerEmail} resmi jadi Premium!`);
         }
+      } else {
+         console.log("⚠️ Email tidak ditemukan di dalam payload Lynk.");
       }
+    } else {
+      console.log(`⚠️ Data masuk, tapi bukan pembayaran sukses. Event: ${body.event}`);
     }
 
-    // 5. Selalu balas Lynk.id dengan senyuman (Status 200 JSON)
     return NextResponse.json(
-      { success: true, status: "Pembayaran diproses ke Supabase" }, 
+      { success: true, status: "Webhook diterima" }, 
       { status: 200 }
     );
 
   } catch (error) {
-    console.error("Error webhook:", error);
+    console.error("❌ Error webhook fatal:", error);
     return NextResponse.json(
       { success: false, status: "Internal Error" }, 
       { status: 500 }
