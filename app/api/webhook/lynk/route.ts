@@ -9,21 +9,29 @@ const supabaseAdmin = createClient(supabaseUrl, supabaseKey);
 // Sistem 2 tier: Basic (Rp55rb, aktif 60 hari) & Pro (Rp100rb, selamanya).
 // Tier ditentukan dari JUDUL produk yang dibeli (data.message_data.items[0].title),
 // BUKAN dari harga — harga bisa berubah karena promo/diskon/voucher, judul
-// produk jauh lebih stabil. Produk yang judulnya mengandung kata "PRO"
-// (case-insensitive) = tier Pro selamanya. SELAIN itu (termasuk produk lama
-// "CLIPPOST android [SEKALI BAYAR]") = tier Basic, aktif 60 hari.
-// SENGAJA default ke 'basic', bukan 'pro', kalau ada keraguan — gagal-aman
-// ke arah tier yang lebih murah/terbatas, bukan kasih akses selamanya
-// gratis kalau ternyata salah deteksi.
+// produk jauh lebih stabil. WAJIB ada kata kunci EKSPLISIT di judul produk
+// Lynk.id: "BASIC" buat produk 55k, "PRO" buat produk 100k.
+//
+// SENGAJA TIDAK ada default/fallback tier — kalau judul produk gak
+// mengandung salah satu kata kunci ini, webhook TIDAK menyentuh
+// users_premium sama sekali (cuma nge-log warning). Ini penting kalau toko
+// Lynk.id yang sama nanti jual produk LAIN yang gak ada hubungannya sama
+// Canclip — tanpa pengecekan eksplisit ini, pembeli produk lain itu bisa
+// KETULARAN dapet akses Canclip gratis tanpa sengaja.
 const BASIC_DURATION_DAYS = 60;
 
-function resolveTier(productTitle: string): { tier: 'basic' | 'pro'; expiresAt: string | null } {
-  const isPro = productTitle.toUpperCase().includes('PRO');
-  if (isPro) return { tier: 'pro', expiresAt: null };
+function resolveTier(productTitle: string): { tier: 'basic' | 'pro'; expiresAt: string | null } | null {
+  const upper = productTitle.toUpperCase();
 
-  const expires = new Date();
-  expires.setDate(expires.getDate() + BASIC_DURATION_DAYS);
-  return { tier: 'basic', expiresAt: expires.toISOString() };
+  if (upper.includes('PRO')) return { tier: 'pro', expiresAt: null };
+
+  if (upper.includes('BASIC')) {
+    const expires = new Date();
+    expires.setDate(expires.getDate() + BASIC_DURATION_DAYS);
+    return { tier: 'basic', expiresAt: expires.toISOString() };
+  }
+
+  return null; // Produk gak dikenali — bukan produk Canclip, jangan disentuh.
 }
 
 export async function POST(request: Request) {
@@ -41,29 +49,35 @@ export async function POST(request: Request) {
       const productTitle = Array.isArray(items) && items[0]?.title ? String(items[0].title) : '';
 
       if (customerEmail) {
-        const { tier, expiresAt } = resolveTier(productTitle);
+        const resolved = resolveTier(productTitle);
 
-        // Upsert (BUKAN insert) — email yang sama bisa bayar lagi (perpanjang
-        // Basic, atau upgrade ke Pro), gak boleh bikin baris duplikat.
-        // device_id di-reset ke null tiap kali bayar — perpanjangan/upgrade
-        // dianggap aktivasi baru, bisa login di HP manapun lagi (gak perlu
-        // DM admin buat lepas kunci device lama).
-        const { error } = await supabaseAdmin
-          .from('users_premium')
-          .upsert(
-            {
-              email: customerEmail.trim().toLowerCase(),
-              tier,
-              expires_at: expiresAt,
-              device_id: null,
-            },
-            { onConflict: 'email' }
-          );
-
-        if (error) {
-          console.error("❌ Gagal upsert ke Supabase:", error.message);
+        if (!resolved) {
+          console.log(`⚠️ Produk "${productTitle}" gak mengandung kata kunci BASIC/PRO — dilewati, users_premium TIDAK disentuh.`);
         } else {
-          console.log(`✅ BERHASIL: Email ${customerEmail} jadi tier '${tier}'${expiresAt ? ` (aktif sampai ${expiresAt})` : ' (selamanya)'}! Produk: "${productTitle}"`);
+          const { tier, expiresAt } = resolved;
+
+          // Upsert (BUKAN insert) — email yang sama bisa bayar lagi
+          // (perpanjang Basic, atau upgrade ke Pro), gak boleh bikin baris
+          // duplikat. device_id di-reset ke null tiap kali bayar —
+          // perpanjangan/upgrade dianggap aktivasi baru, bisa login di HP
+          // manapun lagi (gak perlu DM admin buat lepas kunci device lama).
+          const { error } = await supabaseAdmin
+            .from('users_premium')
+            .upsert(
+              {
+                email: customerEmail.trim().toLowerCase(),
+                tier,
+                expires_at: expiresAt,
+                device_id: null,
+              },
+              { onConflict: 'email' }
+            );
+
+          if (error) {
+            console.error("❌ Gagal upsert ke Supabase:", error.message);
+          } else {
+            console.log(`✅ BERHASIL: Email ${customerEmail} jadi tier '${tier}'${expiresAt ? ` (aktif sampai ${expiresAt})` : ' (selamanya)'}! Produk: "${productTitle}"`);
+          }
         }
       } else {
          console.log("⚠️ Email tidak ditemukan di dalam payload Lynk.");
