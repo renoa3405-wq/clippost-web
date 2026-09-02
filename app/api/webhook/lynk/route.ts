@@ -6,11 +6,12 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; // Wajib Service Role Key
 const supabaseAdmin = createClient(supabaseUrl, supabaseKey);
 
-// Sistem 2 tier: Basic (Rp55rb, aktif 60 hari) & Pro (Rp100rb, selamanya).
-// Tier ditentukan dari JUDUL produk yang dibeli (data.message_data.items[0].title),
-// BUKAN dari harga — harga bisa berubah karena promo/diskon/voucher, judul
-// produk jauh lebih stabil. WAJIB ada kata kunci EKSPLISIT di judul produk
-// Lynk.id: "BASIC" buat produk 55k, "PRO" buat produk 100k.
+// Sistem 2 tier: Basic (Rp55rb, aktif 2 BULAN KALENDER) & Pro (Rp100rb,
+// selamanya). Tier ditentukan dari JUDUL produk yang dibeli
+// (data.message_data.items[0].title), BUKAN dari harga — harga bisa berubah
+// karena promo/diskon/voucher, judul produk jauh lebih stabil. WAJIB ada
+// kata kunci EKSPLISIT di judul produk Lynk.id: "BASIC" buat produk 55k,
+// "PRO" buat produk 100k.
 //
 // SENGAJA TIDAK ada default/fallback tier — kalau judul produk gak
 // mengandung salah satu kata kunci ini, webhook TIDAK menyentuh
@@ -18,7 +19,24 @@ const supabaseAdmin = createClient(supabaseUrl, supabaseKey);
 // Lynk.id yang sama nanti jual produk LAIN yang gak ada hubungannya sama
 // Canclip — tanpa pengecekan eksplisit ini, pembeli produk lain itu bisa
 // KETULARAN dapet akses Canclip gratis tanpa sengaja.
-const BASIC_DURATION_DAYS = 60;
+const BASIC_DURATION_MONTHS = 2;
+
+// "+2 bulan" TIDAK dihitung sebagai 60 hari tetap (itu meleset 1-2 hari
+// tergantung bulan mana yang dilewati, misal beli 2 September + 60 hari =
+// 1 November, padahal harusnya 2 November). Fungsi ini beneran nambah
+// NOMOR BULAN kalender, dengan clamp ke tanggal terakhir bulan tujuan kalau
+// tanggal aslinya gak ada di bulan itu (mis. 31 Jan + 1 bulan = 28/29 Feb,
+// BUKAN overflow ke awal Maret kayak default `Date.setMonth()` JS).
+function addCalendarMonths(date: Date, months: number): Date {
+  const targetMonthIndex = date.getMonth() + months;
+  const lastDayOfTargetMonth = new Date(date.getFullYear(), targetMonthIndex + 1, 0).getDate();
+  const day = Math.min(date.getDate(), lastDayOfTargetMonth);
+  const result = new Date(date);
+  result.setFullYear(date.getFullYear());
+  result.setMonth(targetMonthIndex);
+  result.setDate(day);
+  return result;
+}
 
 function resolveTier(productTitle: string): { tier: 'basic' | 'pro'; expiresAt: string | null } | null {
   const upper = productTitle.toUpperCase();
@@ -26,8 +44,7 @@ function resolveTier(productTitle: string): { tier: 'basic' | 'pro'; expiresAt: 
   if (upper.includes('PRO')) return { tier: 'pro', expiresAt: null };
 
   if (upper.includes('BASIC')) {
-    const expires = new Date();
-    expires.setDate(expires.getDate() + BASIC_DURATION_DAYS);
+    const expires = addCalendarMonths(new Date(), BASIC_DURATION_MONTHS);
     return { tier: 'basic', expiresAt: expires.toISOString() };
   }
 
