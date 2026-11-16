@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { createHash, timingSafeEqual } from 'crypto';
 
 // 1. KUNCI MASTER (Tanpa kompromi ke Anon Key)
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -41,31 +42,97 @@ function addCalendarMonths(date: Date, months: number): Date {
 function resolveTier(productTitle: string): { tier: 'basic' | 'pro'; expiresAt: string | null } | null {
   const upper = productTitle.toUpperCase();
 
-  if (upper.includes('PRO')) return { tier: 'pro', expiresAt: null };
-
+  // BASIC dicek dulu: "PRO" juga ada di kata lain (PROMO, PRODUK), jadi "BASIC Promo" tetap Basic.
   if (upper.includes('BASIC')) {
     const expires = addCalendarMonths(new Date(), BASIC_DURATION_MONTHS);
     return { tier: 'basic', expiresAt: expires.toISOString() };
   }
 
+  if (upper.includes('PRO')) return { tier: 'pro', expiresAt: null };
+
   return null; // Produk gak dikenali — bukan produk Canclip, jangan disentuh.
+}
+
+// Produk langganan Tempel link: judul wajib mengandung "TEMPEL LINK" (atau "PASTE LINK"). Dicek sebelum BASIC/PRO.
+const isPasteLink = (title: string) => /tempel\s*link|paste\s*link/i.test(title);
+
+// Tanda tangan Lynk (dokumentasi: documenter.getpostman.com/view/3211564/2sB2cVf2Kp):
+//   X-Lynk-Signature = sha256_hex(grandTotal + refId + message_id + merchantKey)
+// Toko Lynk dipakai bersama Sribuklip: Lynk mengirim ke webhook Sribuklip, yang meneruskan body + tanda tangan
+// aslinya ke sini. Merchant key-nya sama (LYNK_MERCHANT_KEY di Vercel = merchant key toko Lynk).
+function verifyLynkSignature(raw: string, body: any, signature: string, merchantKey: string): boolean {
+  const m = body?.data?.message_data;
+  const refId = m?.refId;
+  const messageId = body?.data?.message_id;
+  const total = m?.totals?.grandTotal;
+  if (typeof refId !== 'string' || typeof messageId !== 'string' || total === undefined || total === null) return false;
+  const want = signature.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(want)) return false;
+  // grandTotal dicoba persis seperti tertulis di body (mis. "72000.0") dan sebagai angka JS ("72000")
+  const w = /"grandTotal"\s*:\s*(?:"([^"]*)"|(-?[0-9]+(?:\.[0-9]+)?))/.exec(raw);
+  const asWritten = w?.[1] ?? w?.[2];
+  const totals = [...new Set([String(total), ...(asWritten ? [asWritten] : [])])];
+  return totals.some((t) => {
+    const got = createHash('sha256').update(t + refId + messageId + merchantKey).digest();
+    return timingSafeEqual(got, Buffer.from(want, 'hex'));
+  });
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
+    // Boleh lebih dari satu toko Lynk (mis. toko sementara): isi merchant key-nya dipisah koma
+    const merchantKeys = (process.env.LYNK_MERCHANT_KEY ?? '').split(',').map((k) => k.trim()).filter(Boolean);
+    if (!merchantKeys.length) {
+      console.error("❌ LYNK_MERCHANT_KEY belum diisi di Vercel");
+      return NextResponse.json({ success: false, status: "not_configured" }, { status: 503 });
+    }
 
-    // 🚨 DETEKTOR UTAMA: Apapun yang dikirim Lynk, cetak di log Vercel!
-    console.log("🔥 WEBHOOK MASUK DARI LYNK:", JSON.stringify(body, null, 2));
+    const raw = await request.text();
+    const body = JSON.parse(raw);
+
+    // Tombol Test di dashboard Lynk mengirim test_event tanpa tanda tangan
+    if (body?.event === "test_event") return NextResponse.json({ success: true, test: true }, { status: 200 });
+
+    const signature = request.headers.get('x-lynk-signature') ?? '';
+    if (!merchantKeys.some((key) => verifyLynkSignature(raw, body, signature, key))) {
+      console.warn("⚠️ Tanda tangan Lynk tidak cocok, ditolak:", body?.data?.message_data?.refId ?? '');
+      return NextResponse.json({ success: false, status: "signature" }, { status: 401 });
+    }
+
+    console.log("🔥 WEBHOOK MASUK DARI LYNK:", body?.data?.message_data?.refId ?? '');
 
     // 2. Filter Event
     if (body.event === "payment.received" && body.data?.message_action === "SUCCESS") {
 
       const customerEmail = body.data?.message_data?.customer?.email;
       const items = body.data?.message_data?.items;
-      const productTitle = Array.isArray(items) && items[0]?.title ? String(items[0].title) : '';
+      // Produk Sribuklip di toko yang sama bukan urusan ClipPost ("Sribuklip Pro" jangan sampai jadi ClipPost PRO)
+      const item = Array.isArray(items) ? items.find((i: any) => i?.title && !/sribuklip/i.test(String(i.title))) : null;
+      const productTitle = item ? String(item.title) : '';
 
-      if (customerEmail) {
+      if (customerEmail && isPasteLink(productTitle)) {
+        // Langganan Tempel link (Rp20rb/bulan): +1 bulan kalender dari sekarang atau dari sisa langganan yang masih
+        // aktif. Hanya untuk email yang sudah punya ClipPost; tier dan kunci HP tidak disentuh.
+        const email = customerEmail.trim().toLowerCase();
+        const { data: row, error: readErr } = await supabaseAdmin.from('users_premium').select('paste_link_until').eq('email', email).maybeSingle();
+        if (readErr) {
+          console.error("❌ Gagal membaca users_premium:", readErr.message);
+          return NextResponse.json({ success: false, status: "db" }, { status: 500 });
+        }
+        if (!row) {
+          console.warn(`⚠️ PASTE_LINK_NO_ACCOUNT: ${email} membeli "${productTitle}" tapi belum punya ClipPost — cek manual / refund.`);
+        } else {
+          const current = row.paste_link_until ? new Date(row.paste_link_until) : null;
+          const from = current && current > new Date() ? current : new Date();
+          const until = addCalendarMonths(from, 1).toISOString();
+          const { error } = await supabaseAdmin.from('users_premium').update({ paste_link_until: until }).eq('email', email);
+          if (error) {
+            console.error("❌ Gagal menyimpan Tempel link:", error.message);
+            return NextResponse.json({ success: false, status: "db" }, { status: 500 });
+          }
+          console.log(`✅ Tempel link ${email} aktif sampai ${until}`);
+        }
+      } else if (customerEmail) {
         const resolved = resolveTier(productTitle);
 
         if (!resolved) {
@@ -92,6 +159,8 @@ export async function POST(request: Request) {
 
           if (error) {
             console.error("❌ Gagal upsert ke Supabase:", error.message);
+            // Jawab gagal supaya Lynk mengirim ulang (pembeli tidak hilang diam-diam)
+            return NextResponse.json({ success: false, status: "db" }, { status: 500 });
           } else {
             console.log(`✅ BERHASIL: Email ${customerEmail} jadi tier '${tier}'${expiresAt ? ` (aktif sampai ${expiresAt})` : ' (selamanya)'}! Produk: "${productTitle}"`);
           }
