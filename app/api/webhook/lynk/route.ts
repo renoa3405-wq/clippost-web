@@ -56,6 +56,10 @@ function resolveTier(productTitle: string): { tier: 'basic' | 'pro'; expiresAt: 
 // Produk langganan Tempel link: judul wajib mengandung "TEMPEL LINK" (atau "PASTE LINK"). Dicek sebelum BASIC/PRO.
 const isPasteLink = (title: string) => /tempel\s*link|paste\s*link/i.test(title);
 
+// Produk "Clippost UPDATE" (Rp20rb sekali bayar): pembeli lama boleh memakai v7 (users_premium.v7_paid). Judul wajib
+// mengandung kata "UPDATE". Dicek sebelum BASIC/PRO, hanya untuk email yang sudah terdaftar.
+const isUpdate = (title: string) => /\bupdate\b/i.test(title);
+
 // Tanda tangan Lynk (dokumentasi: documenter.getpostman.com/view/3211564/2sB2cVf2Kp):
 //   X-Lynk-Signature = sha256_hex(grandTotal + refId + message_id + merchantKey)
 // Toko Lynk dipakai bersama Sribuklip: Lynk mengirim ke webhook Sribuklip, yang meneruskan body + tanda tangan
@@ -132,6 +136,15 @@ export async function POST(request: Request) {
           }
           console.log(`✅ Tempel link ${email} aktif sampai ${until}`);
         }
+      } else if (customerEmail && isUpdate(productTitle)) {
+        const email = customerEmail.trim().toLowerCase();
+        const { data: row, error } = await supabaseAdmin.from('users_premium').update({ v7_paid: true }).eq('email', email).select('id').maybeSingle();
+        if (error) {
+          console.error("❌ Gagal menyimpan update v7:", error.message);
+          return NextResponse.json({ success: false, status: "db" }, { status: 500 });
+        }
+        if (!row) console.warn(`⚠️ UPDATE_NO_ACCOUNT: ${email} membeli "${productTitle}" tapi belum punya ClipPost — cek manual / refund.`);
+        else console.log(`✅ Update v7 aktif untuk ${email}`);
       } else if (customerEmail) {
         const resolved = resolveTier(productTitle);
 
@@ -153,6 +166,7 @@ export async function POST(request: Request) {
                 tier,
                 expires_at: expiresAt,
                 device_id: null,
+                v7_paid: true,   // pembeli Basic/Pro baru (atau perpanjangan) langsung dapat v7
               },
               { onConflict: 'email' }
             );
