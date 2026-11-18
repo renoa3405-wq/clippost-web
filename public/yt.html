@@ -22,11 +22,22 @@
   f.allow = 'autoplay; encrypted-media';
   f.src = YT + '/embed/' + id + '?' + new URLSearchParams({
     autoplay: '1', mute: '1', controls: '0', playsinline: '1', loop: '1', playlist: id, start: String(start),
-    modestbranding: '1', rel: '0', iv_load_policy: '3', disablekb: '1', enablejsapi: '1', origin: location.origin
+    modestbranding: '1', rel: '0', iv_load_policy: '3', disablekb: '1', enablejsapi: '1', origin: location.origin,
+    cc_load_policy: '0'
   });
   document.body.appendChild(f);
+  // Subtitle otomatis YouTube (CC) menutupi pratinjau subtitle ClipPost: modul teksnya dilepas setiap kali pemutar
+  // memberi kabar (modul bisa dimuat ulang saat video mulai diputar), paling sering sekali per detik.
+  var lastCc = 0;
+  function hideCaptions() {
+    if (Date.now() - lastCc < 1000) return;
+    lastCc = Date.now();
+    ['captions', 'cc'].forEach(function (m) {
+      f.contentWindow.postMessage(JSON.stringify({ event: 'command', func: 'unloadModule', args: [m] }), YT);
+    });
+  }
   window.addEventListener('message', function (e) {
-    if (e.source === f.contentWindow && e.origin === YT) { if (parent !== window) parent.postMessage(e.data, '*'); }
+    if (e.source === f.contentWindow && e.origin === YT) { hideCaptions(); if (parent !== window) parent.postMessage(e.data, '*'); }
     else if (e.source === parent && f.contentWindow) f.contentWindow.postMessage(e.data, YT);
   });
 })();
