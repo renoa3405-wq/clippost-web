@@ -13,9 +13,29 @@ type Contact = { phone: string; email: string | null; name: string | null; statu
 
 const FILTERS = [["", "Semua"], ["belum", "Belum dikirimi"], ["antri", "Di batch"], ["terkirim", "Sudah dikirimi"], ["gagal", "Gagal"], ["jangan", "Jangan dikirimi"]] as const;
 const STATUS_LABEL: Record<Status, string> = { belum: "Belum", antri: "Di batch", terkirim: "Terkirim", gagal: "Gagal", jangan: "Jangan" };
-const TEMPLATE_KEY = "clippost-admin-bc-template";
-const DEFAULT_TEMPLATE = "Halo kak {nama}, ClipPost sekarang ada New Update: hasil klip lebih bagus, hook & subtitle baru, dan bisa Tempel link YouTube. Kakak bisa coba 1 video gratis dulu. Download versi terbaru di sribuklip.com/dl ya kak 🙏";
+const TEMPLATE_KEY = "clippost-admin-bc-template-v2";
+const DEFAULT_TEMPLATE = `Halo kak {nama} 👋 dari ClipPost.
+
+ClipPost sekarang ada NEW UPDATE:
+✅ AI baru pilih momen & bikin hook, klipnya jauh lebih bagus
+✅ Subtitle & tampilan baru
+✅ Bisa langsung tempel link YouTube
+
+Sebagai pembeli Pro, kakak bisa COBA GRATIS 1 video dulu.
+Download versi terbaru: https://sribuklip.com/dl
+Login pakai email yang sama waktu beli ya kak.
+
+Kalau cocok, cukup Rp20.000 sekali bayar untuk seterusnya (harga promo 3 hari setelah mencoba) 🙏`;
 const PAGE = 100;
+
+// Nama panggilan dari nama pembeli di Lynk: kata pertama, huruf depan kapital ("aizawa" → "Aizawa")
+export const firstName = (name: string | null) => {
+  // Lewati inisial/singkatan ("M.", "Muh.") dan angka; ambil kata pertama yang berupa nama
+  const w = (name ?? "").trim().split(/\s+/).find((x) => /^[\p{L}']{3,20}$/u.test(x)) ?? "";
+  return w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : "";
+};
+// Nama tidak ada / tidak wajar: "Halo kak {nama} 👋" jadi "Halo kak 👋"
+const fill = (template: string, name: string | null) => { const n = firstName(name); return template.replace(/ ?\{nama\}/g, n ? ` ${n}` : ""); };
 
 export function Broadcast({ password }: { password: string }) {
   const api = useApi(password);
@@ -49,9 +69,10 @@ export function Broadcast({ password }: { password: string }) {
   }
   async function download(b: Batch) {
     const rows = await batchRows(b.id);
-    const csv = ["phone,name,email", ...rows.map((r) => [r.phone, r.name ?? "", r.email ?? ""].map((v) => `"${v.replace(/"/g, '""')}"`).join(","))].join("\n");
+    // Kolom "pesan" = template yang sudah diisi nama, untuk aplikasi broadcast yang menerima pesan per baris
+    const csv = ["phone,nama,email,pesan", ...rows.map((r) => [r.phone, firstName(r.name), r.email ?? "", fill(template, r.name)].map((v) => `"${v.replace(/"/g, '""')}"`).join(","))].join("\n");
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
     a.download = `broadcast-${b.id}-${b.name.replace(/\W+/g, "_")}.csv`;
     a.click();
   }
@@ -107,7 +128,7 @@ export function Broadcast({ password }: { password: string }) {
 
       <Card title="Template pesan">
         <p className="text-sm text-slate-500">Dipakai untuk tombol WA per nomor di bawah. {"{nama}"} diganti nama pembeli. Tersimpan di browser ini.</p>
-        <textarea value={template} onChange={(e) => saveTemplate(e.target.value)} rows={3} className="mt-2 w-full rounded-xl border px-3 py-2 text-sm" />
+        <textarea value={template} onChange={(e) => saveTemplate(e.target.value)} rows={12} className="mt-2 w-full rounded-xl border px-3 py-2 text-sm" />
       </Card>
 
       <ContactList password={password} template={template} reload={reloadList} batch={filterBatch} clearBatch={() => setFilterBatch(null)} onChanged={() => void loadSum()} />
@@ -132,7 +153,7 @@ function ContactList({ password, template, reload, batch, clearBatch, onChanged 
   async function setRow(phone: string, s: Status) {
     try { await api("/api/admin/broadcast", { action: "set_status", phone, status: s }); void load(); onChanged(); } catch (e) { setErr((e as Error).message); }
   }
-  const text = (c: Contact) => template.replace(/\{nama\}/g, c.name?.split(" ")[0] ?? "").replace(/\s+,/g, ",").replace(/kak\s+,/g, "kak,");
+  const text = (c: Contact) => fill(template, c.name);
   const pages = data ? Math.ceil(data.count / PAGE) : 0;
   return (
     <Card title="Daftar nomor" action={batch ? <button onClick={clearBatch} className={btnOutline}>Batch #{batch} ✕</button> : undefined}>
