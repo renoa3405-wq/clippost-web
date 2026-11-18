@@ -5,7 +5,9 @@
 // Password admin disimpan di sessionStorage tab ini saja dan dikirim ke API admin lewat header.
 import { useCallback, useEffect, useState } from "react";
 import { Card, btnOutline, fmt, useApi } from "./_parts/ui";
-import { Overview } from "./_parts/Overview";
+import { Overview, type Tab } from "./_parts/Overview";
+import { Sales } from "./_parts/Sales";
+import { BulkReply } from "./_parts/BulkReply";
 import { Broadcast } from "./_parts/Broadcast";
 import { Todos } from "./_parts/Todos";
 
@@ -21,7 +23,7 @@ const KEY = "clippost-admin-password";
 export default function AdminPage() {
   const [password, setPassword] = useState("");
   const [input, setInput] = useState("");
-  const [tab, setTab] = useState<"overview" | "buyers" | "support" | "todos" | "broadcast" | "ai" | "update">("overview");
+  const [tab, setTab] = useState<Tab>("overview");
   useEffect(() => { setPassword(sessionStorage.getItem(KEY) ?? ""); }, []);
 
   if (!password) {
@@ -37,22 +39,27 @@ export default function AdminPage() {
     );
   }
 
-  const tabs = [["overview", "Ringkasan"], ["buyers", "Pembeli"], ["support", "Bantuan"], ["todos", "To-do"], ["broadcast", "Broadcast"], ["ai", "Pengaturan AI"], ["update", "Update App"]] as const;
+  const tabs = [["overview", "📊 Ringkasan"], ["sales", "💰 Penjualan"], ["support", "💬 Bantuan"], ["todos", "✅ To-do"], ["broadcast", "📣 Broadcast"], ["buyers", "👥 Pembeli"], ["ai", "⚙️ AI"], ["update", "⬆️ Update"]] as const;
   return (
     <main className="min-h-screen bg-[#F7F9FC] text-[#0B1B33]">
-      <header className="sticky top-0 z-10 border-b bg-white/90 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
-          <h1 className="text-lg font-semibold">Admin ClipPost</h1>
-          <nav className="ml-auto flex gap-1 overflow-x-auto">
-            {tabs.map(([id, label]) => (
-              <button key={id} onClick={() => setTab(id)} className={`rounded-full px-3 py-1.5 text-sm font-medium ${tab === id ? "bg-gradient-to-r from-[#0B2A5B] to-[#1A73E8] text-white" : "text-slate-600 hover:bg-slate-100"}`}>{label}</button>
-            ))}
-          </nav>
-          <button onClick={() => { sessionStorage.removeItem(KEY); setPassword(""); }} className="text-xs text-slate-500 underline">Keluar</button>
+      <header className="sticky top-0 z-10 border-b bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 pt-3">
+          <div className="grid size-8 place-items-center rounded-xl bg-gradient-to-br from-[#0B2A5B] to-[#1A73E8] text-sm font-bold text-white">C</div>
+          <div>
+            <h1 className="text-base font-semibold leading-tight">ClipPost</h1>
+            <p className="text-xs text-slate-500">{new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</p>
+          </div>
+          <button onClick={() => { sessionStorage.removeItem(KEY); setPassword(""); }} className="ml-auto text-xs text-slate-500 underline">Keluar</button>
         </div>
+        <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 py-2">
+          {tabs.map(([id, label]) => (
+            <button key={id} onClick={() => setTab(id)} className={`shrink-0 rounded-full px-3 py-1.5 text-sm font-medium ${tab === id ? "bg-gradient-to-r from-[#0B2A5B] to-[#1A73E8] text-white" : "text-slate-600 hover:bg-slate-100"}`}>{label}</button>
+          ))}
+        </nav>
       </header>
       <div className="mx-auto max-w-6xl px-4 py-6">
-        {tab === "overview" && <Overview password={password} />}
+        {tab === "overview" && <Overview password={password} go={setTab} />}
+        {tab === "sales" && <Sales password={password} />}
         {tab === "buyers" && <Buyers password={password} />}
         {tab === "support" && <Support password={password} />}
         {tab === "todos" && <Todos password={password} />}
@@ -157,16 +164,17 @@ function Support({ password }: { password: string }) {
   }
   return (
     <div className="grid gap-4">
-    <Card title="Analisa AI" action={<button disabled={busy !== null} onClick={() => void analyze()} className="h-9 rounded-full bg-gradient-to-r from-[#0B2A5B] to-[#1A73E8] px-4 text-sm font-medium text-white disabled:opacity-50">{busy === "todo" ? "Membaca chat…" : "Analisa chat → to-do"}</button>}>
-      {ai ? <p className="whitespace-pre-wrap text-sm">{ai}</p> : <p className="text-sm text-slate-500">AI membaca semua chat 30 hari terakhir, mengelompokkan keluhan, lalu membuat to-do: untuk kamu (balas / aktivasi / pembayaran) atau untuk CTO (perbaikan kode). Sekitar Rp1.000–5.000 sekali analisa.</p>}
+    <BulkReply password={password} onSent={() => { void loadThreads(); if (open) void openThread(open); }} openThread={(e) => { void openThread(e); document.getElementById("thread")?.scrollIntoView({ behavior: "smooth" }); }} />
+    <Card title="Analisa masalah → to-do" action={<button disabled={busy !== null} onClick={() => void analyze()} className="h-9 rounded-full bg-gradient-to-r from-[#0B2A5B] to-[#1A73E8] px-4 text-sm font-medium text-white disabled:opacity-50">{busy === "todo" ? "Membaca chat…" : "Analisa chat → to-do"}</button>}>
+      {ai ? <p className="whitespace-pre-wrap text-sm">{ai}</p> : <p className="text-sm text-slate-500">AI membaca semua chat 30 hari terakhir, mengelompokkan keluhan, lalu membuat to-do: untuk kamu (balas / aktivasi / pembayaran) atau untuk CTO (perbaikan kode). ±Rp500 sekali analisa.</p>}
     </Card>
-    <div className="grid gap-4 md:grid-cols-[280px_1fr]">
+    <div id="thread" className="grid gap-4 md:grid-cols-[280px_1fr]">
       <Card title="Percakapan">
         {err && <p className="mb-2 text-sm text-red-600">{err}</p>}
         <div className="divide-y">
-          {threads.map((t) => (
+          {[...threads].sort((a, b) => Number(a.lastFromAdmin) - Number(b.lastFromAdmin) || b.lastAt.localeCompare(a.lastAt)).map((t) => (
             <button key={t.email} onClick={() => void openThread(t.email)} className={`block w-full py-2 text-left text-sm ${open === t.email ? "font-semibold" : ""}`}>
-              <div className="flex items-center gap-2"><span className="truncate">{t.email}</span>{t.unread > 0 && <span className="rounded-full bg-red-500 px-1.5 text-[10px] text-white">{t.unread}</span>}</div>
+              <div className="flex items-center gap-2"><span className="truncate">{t.email}</span>{t.unread > 0 && <span className="rounded-full bg-red-500 px-1.5 text-[10px] text-white">{t.unread}</span>}{!t.lastFromAdmin && <span className="ml-auto shrink-0 rounded-full bg-amber-100 px-1.5 text-[10px] text-amber-800">menunggu</span>}</div>
               <div className="truncate text-xs text-slate-500">{t.lastFromAdmin ? "Kamu: " : ""}{t.lastMessage}</div>
             </button>
           ))}

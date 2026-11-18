@@ -1,5 +1,6 @@
 // AI dashboard admin (Claude), hanya saat tombol ditekan:
 //   support = baca chat Bantuan 30 hari terakhir → masalah apa saja + to-do (saya / CTO)
+//   groups  = kelompokkan pembeli yang MASIH menunggu balasan per topik, untuk dibalas massal (admin yang menulis jawabannya)
 //   reply   = saran balasan untuk satu percakapan Bantuan (tidak dikirim otomatis)
 //   recap   = rekap harian / mingguan / bulanan dari angka dashboard + saran tindakan
 import { NextResponse } from "next/server";
@@ -20,6 +21,15 @@ const TodoSchema = z.object({
     owner: z.enum(["saya", "cto"]),
     priority: z.enum(["tinggi", "sedang", "rendah"]),
     emails: z.array(z.string()),
+  })),
+});
+
+const GroupSchema = z.object({
+  topics: z.array(z.object({
+    judul: z.string(),
+    ringkasan: z.string(),
+    emails: z.array(z.string()),
+    saran_jawaban: z.string(),
   })),
 });
 
@@ -44,6 +54,7 @@ export async function POST(req: Request) {
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Body tidak valid" }, { status: 400 }); }
   try {
     if (body.kind === "support") return NextResponse.json(await supportTodos());
+    if (body.kind === "groups") return NextResponse.json(await groupWaiting());
     if (body.kind === "reply" && body.email) return NextResponse.json(await replyDraft(body.email.toLowerCase()));
     if (body.kind === "recap") return NextResponse.json(await recap(body.period === "week" || body.period === "month" ? body.period : "day"));
     return NextResponse.json({ error: "Jenis permintaan tidak dikenal" }, { status: 400 });
@@ -93,6 +104,47 @@ async function supportTodos() {
   return { ringkasan: out.ringkasan, added: out.todos.length, report };
 }
 
+async function groupWaiting() {
+  const { data, error } = await admin().from("support_messages").select("email, from_admin, body, video_title, created_at").order("id").limit(5000);
+  if (error) throw error;
+  type Msg = NonNullable<typeof data>[number];
+  const byEmail = new Map<string, Msg[]>();
+  for (const m of data ?? []) byEmail.set(m.email, [...(byEmail.get(m.email) ?? []), m]);
+  // Menunggu = pesan terakhir dari pembeli. Yang ditanyakan = pesan pembeli setelah balasan admin terakhir.
+  const waiting = [...byEmail].filter(([, ms]) => !ms[ms.length - 1].from_admin);
+  if (!waiting.length) {
+    await saveReport("groups", null, JSON.stringify({ topics: [] }), { input_tokens: 0, output_tokens: 0 });
+    return { topics: [], waiting: 0 };
+  }
+  const transcript = waiting.map(([email, ms]) => {
+    const lastAdmin = ms.map((m) => m.from_admin).lastIndexOf(true);
+    const context = lastAdmin < 0 ? [] : ms.slice(Math.max(0, lastAdmin - 3), lastAdmin + 1).map((m) => `  (sebelumnya) ${m.from_admin ? "ADMIN" : "PEMBELI"}: ${clip(m.body, 300)}`);
+    const open = ms.slice(lastAdmin + 1).map((m) => `  PEMBELI${m.video_title ? ` (video: ${clip(m.video_title, 60)})` : ""}: ${clip(m.body, 800)}`);
+    return `### ${email}\n${[...context, ...open].join("\n")}`;
+  }).join("\n\n");
+
+  const res = await claude().messages.parse({
+    model: MODEL,
+    max_tokens: 8000,
+    output_config: { effort: "medium", format: zodOutputFormat(GroupSchema) },
+    system: `Kamu membantu pemilik ClipPost membalas chat Bantuan secara massal. Fakta produk:\n${PRODUCT}`,
+    messages: [{
+      role: "user",
+      content: `Berikut pembeli yang MASIH menunggu balasan. Baris "PEMBELI" tanpa "(sebelumnya)" adalah pertanyaan yang belum dijawab.\n\n${transcript}\n\nKelompokkan pertanyaan yang belum dijawab per topik (mis. "API key Pexels tidak bisa dibuat", "Cara aktifkan Tempel link"). Aturan:\n- Satu pembeli boleh masuk lebih dari satu topik kalau bertanya beberapa hal.\n- SETIAP email di atas wajib masuk minimal satu topik; yang tidak jelas masuk topik "Lainnya (baca sendiri)".\n- "emails" persis seperti tertulis di atas.\n- "judul" singkat (maks 6 kata). "ringkasan": 1 kalimat, apa yang mereka tanyakan.\n- "saran_jawaban": draf jawaban untuk SEMUA pembeli di topik itu, bahasa santai sopan, langkah bernomor kalau perlu, TANPA salam pembuka (salam ditambahkan otomatis). Hanya pakai fakta produk di atas; kalau tidak tahu jawabannya, kosongkan.`,
+    }],
+  });
+  const out = res.parsed_output;
+  if (!out) throw new Error("Jawaban AI tidak bisa dibaca, coba lagi");
+  // Pastikan tidak ada email salah tulis dan tidak ada pembeli yang terlewat
+  const valid = new Set(waiting.map(([e]) => e));
+  const topics = out.topics.map((t) => ({ ...t, emails: [...new Set(t.emails.map((e) => e.trim().toLowerCase()).filter((e) => valid.has(e)))] })).filter((t) => t.emails.length);
+  const covered = new Set(topics.flatMap((t) => t.emails));
+  const missed = [...valid].filter((e) => !covered.has(e));
+  if (missed.length) topics.push({ judul: "Lainnya (baca sendiri)", ringkasan: "AI tidak yakin topiknya; buka percakapannya dulu.", emails: missed, saran_jawaban: "" });
+  await saveReport("groups", null, JSON.stringify({ topics }), res.usage);
+  return { topics, waiting: valid.size, cost_usd: costUsd(MODEL, res.usage.input_tokens, res.usage.output_tokens) };
+}
+
 async function replyDraft(email: string) {
   const [msgs, user, jobs] = await Promise.all([
     admin().from("support_messages").select("from_admin, body, video_title, created_at").eq("email", email).order("id").limit(60),
@@ -120,6 +172,27 @@ async function replyDraft(email: string) {
 
 const LABEL: Record<Period, string> = { day: "hari ini", week: "7 hari terakhir", month: "30 hari terakhir" };
 
+type Stats = Record<string, unknown> & { orders_since: string | null; activity_since: string };
+
+// Angka dengan nama yang jelas + batas data yang belum tercatat, supaya AI tidak salah baca atau salah bandingkan
+function describe(s: Stats, from: Date) {
+  const rp = (n: unknown) => `Rp${Number(n ?? 0).toLocaleString("id-ID")}`;
+  const ordersOk = !!s.orders_since && new Date(s.orders_since) <= from;
+  const activityOk = new Date(s.activity_since + "T00:00:00+07:00") <= from;
+  return [
+    `Total pembeli terdaftar: ${s.total_users} (Pro ${s.pro}, Basic aktif ${s.basic_active})`,
+    `Pembeli baru terdaftar: ${s.new_users}`,
+    `Pengguna yang membuka aplikasi: ${activityOk ? s.active_users : "BELUM TERCATAT untuk seluruh periode ini"}`,
+    `Pro lama yang belum bayar New Update (saat ini): ${s.old_pro_unpaid}`,
+    `Uji coba dimulai: ${s.trials_new}; total uji coba sepanjang waktu ${s.trials_total}, ${s.trials_paid} di antaranya sudah bayar New Update`,
+    ordersOk ? `Order: ${s.orders}, pendapatan ${rp(s.revenue)}, New Update terjual ${s.update_sold}, perpanjangan ${s.renewals}, rincian ${JSON.stringify(s.revenue_by_kind)}`
+      : `Order/pendapatan: TIDAK LENGKAP untuk periode ini (pencatatan order mulai ${s.orders_since ?? "belum ada order tercatat"}); yang tercatat: ${s.orders} order, ${rp(s.revenue)}`,
+    `Tempel link aktif (saat ini): ${s.paste_active}, habis ≤7 hari: ${s.paste_expiring_7d}; diproses periode ini ${s.link_jobs} (gagal ${s.link_jobs_failed})`,
+    `Chat Bantuan masuk: ${s.support_in}; pembeli menunggu balasan (saat ini): ${s.support_waiting}; pesan belum dibaca: ${s.support_unread}`,
+    `Broadcast terkirim: ${s.bc_sent}`,
+  ].join("\n");
+}
+
 async function recap(period: Period) {
   const data = await overview(period);
   const todos = await admin().from("admin_todos").select("title, owner, priority").eq("status", "baru").limit(50);
@@ -127,10 +200,10 @@ async function recap(period: Period) {
     model: MODEL,
     max_tokens: 6000,
     output_config: { effort: "medium" },
-    system: `Kamu analis bisnis untuk pemilik ClipPost (bisnis 1 orang, modal terbatas). Bahasa Indonesia sederhana, langsung ke inti, pakai angka dari data. Jangan mengarang angka yang tidak ada di data; kalau data belum cukup (mis. pencatatan order baru dimulai), katakan begitu.\nFakta produk:\n${PRODUCT}`,
+    system: `Kamu analis bisnis untuk pemilik ClipPost (bisnis 1 orang, modal terbatas). Bahasa Indonesia sederhana, langsung ke inti, pakai angka dari data. Jangan mengarang angka. Jangan membandingkan angka yang ditandai BELUM TERCATAT / TIDAK LENGKAP / null; sebutkan saja datanya belum lengkap. Jangan menebak penyebab tanpa data.\nFakta produk:\n${PRODUCT}`,
     messages: [{
       role: "user",
-      content: `Rekap ${LABEL[period]} (WIB). Angka periode ini:\n${JSON.stringify(data.current)}\n\nPeriode sebelumnya dengan panjang sama:\n${JSON.stringify(data.previous)}\n\nPer hari (30 hari):\n${JSON.stringify(data.daily)}\n\nTempel link habis ≤7 hari: ${JSON.stringify(data.expiring)}\n\nTo-do terbuka: ${JSON.stringify(todos.data ?? [])}\n\nTulis rekap dengan bagian: "Angka utama" (naik/turun dibanding periode sebelumnya), "Yang perlu diperhatikan", dan "3 tindakan berikutnya" (paling berdampak ke pendapatan dulu). Maksimal 250 kata. Teks biasa, tanpa tabel.`,
+      content: `Rekap ${LABEL[period]} (WIB). Akun tes pemilik sudah dikeluarkan dari semua angka.\n\nPERIODE INI:\n${describe(data.current as Stats, data.range.from)}\n\nPERIODE SEBELUMNYA (panjang sama):\n${describe(data.previous as Stats, data.range.prevFrom)}\n\nPer hari 30 hari terakhir (null = belum tercatat, BUKAN nol; jangan dibandingkan):\n${JSON.stringify(data.daily)}\n\nTempel link habis ≤7 hari: ${JSON.stringify(data.expiring)}\n\nTo-do terbuka: ${JSON.stringify(todos.data ?? [])}\n\nTulis rekap dengan bagian: "Angka utama" (naik/turun dibanding periode sebelumnya), "Yang perlu diperhatikan", dan "3 tindakan berikutnya" (paling berdampak ke pendapatan dulu). Maksimal 250 kata. Teks biasa, tanpa tabel.`,
     }],
   });
   const text = res.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("").trim();
