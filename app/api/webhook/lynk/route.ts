@@ -60,6 +60,42 @@ const isPasteLink = (title: string) => /tempel\s*link|paste\s*link/i.test(title)
 // mengandung kata "UPDATE". Dicek sebelum BASIC/PRO, hanya untuk email yang sudah terdaftar.
 const isUpdate = (title: string) => /\bupdate\b/i.test(title);
 
+// Catatan order untuk dashboard admin (pendapatan, nomor WA). Gagal mencatat tidak menggagalkan aktivasi.
+function normalizePhone(raw: unknown): string | null {
+  let d = String(raw ?? '').replace(/\D/g, '');
+  if (d.startsWith('0')) d = '62' + d.slice(1);
+  else if (d.startsWith('8')) d = '62' + d;
+  return /^628\d{7,12}$/.test(d) ? d : null;
+}
+
+function orderKind(title: string): string {
+  if (isPasteLink(title)) return 'paste_link';
+  if (isUpdate(title)) return 'update';
+  const upper = title.toUpperCase();
+  return upper.includes('BASIC') ? 'basic' : upper.includes('PRO') ? 'pro' : 'lain';
+}
+
+async function recordOrder(body: any, productTitle: string) {
+  const m = body?.data?.message_data;
+  const amount = Math.round(Number(m?.totals?.grandTotal ?? 0)) || 0;
+  const { error } = await supabaseAdmin.from('orders').upsert({
+    ref_id: String(m?.refId ?? '') || null,
+    email: String(m?.customer?.email ?? '').trim().toLowerCase() || null,
+    name: String(m?.customer?.name ?? '').trim().slice(0, 100) || null,
+    phone: normalizePhone(m?.customer?.phone),
+    product: productTitle.slice(0, 200),
+    kind: orderKind(productTitle),
+    amount,
+  }, { onConflict: 'ref_id', ignoreDuplicates: true });
+  if (error) console.error("⚠️ Gagal mencatat order:", error.message);
+}
+
+// Hal yang perlu dicek manual masuk ke to-do dashboard admin
+async function addTodo(title: string, detail: string, email: string) {
+  const { error } = await supabaseAdmin.from('admin_todos').insert({ title, detail, area: 'pembayaran', priority: 'tinggi', emails: [email], source: 'webhook' });
+  if (error) console.error("⚠️ Gagal membuat to-do:", error.message);
+}
+
 // Tanda tangan Lynk (dokumentasi: documenter.getpostman.com/view/3211564/2sB2cVf2Kp):
 //   X-Lynk-Signature = sha256_hex(grandTotal + refId + message_id + merchantKey)
 // Toko Lynk dipakai bersama Sribuklip: Lynk mengirim ke webhook Sribuklip, yang meneruskan body + tanda tangan
@@ -113,19 +149,22 @@ export async function POST(request: Request) {
       // Produk Sribuklip di toko yang sama bukan urusan ClipPost ("Sribuklip Pro" jangan sampai jadi ClipPost PRO)
       const item = Array.isArray(items) ? items.find((i: any) => i?.title && !/sribuklip/i.test(String(i.title))) : null;
       const productTitle = item ? String(item.title) : '';
+      if (item) await recordOrder(body, productTitle);
 
       if (customerEmail && isPasteLink(productTitle)) {
         // Langganan Tempel link (Rp20rb/bulan): +1 bulan kalender dari sekarang atau dari sisa langganan yang masih
         // aktif. Hanya untuk email yang sudah punya ClipPost; tier dan kunci HP tidak disentuh.
         const email = customerEmail.trim().toLowerCase();
-        const { data: row, error: readErr } = await supabaseAdmin.from('users_premium').select('paste_link_until').eq('email', email).maybeSingle();
+        const { data: row, error: readErr } = await supabaseAdmin.from('users_premium').select('paste_link_until, v7_paid').eq('email', email).maybeSingle();
         if (readErr) {
           console.error("❌ Gagal membaca users_premium:", readErr.message);
           return NextResponse.json({ success: false, status: "db" }, { status: 500 });
         }
         if (!row) {
           console.warn(`⚠️ PASTE_LINK_NO_ACCOUNT: ${email} membeli "${productTitle}" tapi belum punya ClipPost — cek manual / refund.`);
+          await addTodo(`Tempel link dibeli, email tidak terdaftar: ${email}`, `Produk "${productTitle}". Email ini tidak ada di daftar pembeli ClipPost. Hubungi pembeli: salah ketik email, atau refund.`, email);
         } else {
+          if (!row.v7_paid) await addTodo(`Tempel link dibeli sebelum New Update: ${email}`, `Pembeli Pro lama ini belum membayar New Update (Rp20.000), jadi setelah video uji coba aplikasinya terkunci. Langganan Tempel link tetap ditambah 1 bulan. Hubungi pembeli: bayar New Update, atau refund.`, email);
           const current = row.paste_link_until ? new Date(row.paste_link_until) : null;
           const from = current && current > new Date() ? current : new Date();
           const until = addCalendarMonths(from, 1).toISOString();
@@ -143,7 +182,10 @@ export async function POST(request: Request) {
           console.error("❌ Gagal menyimpan update v7:", error.message);
           return NextResponse.json({ success: false, status: "db" }, { status: 500 });
         }
-        if (!row) console.warn(`⚠️ UPDATE_NO_ACCOUNT: ${email} membeli "${productTitle}" tapi belum punya ClipPost — cek manual / refund.`);
+        if (!row) {
+          console.warn(`⚠️ UPDATE_NO_ACCOUNT: ${email} membeli "${productTitle}" tapi belum punya ClipPost — cek manual / refund.`);
+          await addTodo(`New Update dibeli, email tidak terdaftar: ${email}`, `Produk "${productTitle}". Email ini tidak ada di daftar pembeli ClipPost (mungkin beda email dengan saat beli Pro). Tanyakan email lamanya, lalu aktifkan manual.`, email);
+        }
         else console.log(`✅ Update v7 aktif untuk ${email}`);
       } else if (customerEmail) {
         const resolved = resolveTier(productTitle);
