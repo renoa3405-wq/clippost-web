@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Preview</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{border:0;width:100%;height:100%;display:block}</style>
+</head>
+<body>
+<script>
+// Perantara preview YouTube untuk aplikasi ClipPost. Halaman aplikasi dimuat dari file:// sehingga tidak mengirim
+// referer, dan YouTube menolak embed tanpa referer (Error 153). Halaman ini menyematkan pemutar YouTube dari
+// domain https, lalu meneruskan pesan postMessage dua arah antara aplikasi dan pemutar.
+(function () {
+  var YT = 'https://www.youtube-nocookie.com';
+  var q = new URLSearchParams(location.search);
+  var id = q.get('id') || '';
+  var start = Math.max(0, parseInt(q.get('start') || '0', 10) || 0);
+  if (!/^[A-Za-z0-9_-]{11}$/.test(id)) return;
+  var f = document.createElement('iframe');
+  f.allow = 'autoplay; encrypted-media';
+  f.src = YT + '/embed/' + id + '?' + new URLSearchParams({
+    autoplay: '1', mute: '1', controls: '0', playsinline: '1', loop: '1', playlist: id, start: String(start),
+    modestbranding: '1', rel: '0', iv_load_policy: '3', disablekb: '1', enablejsapi: '1', origin: location.origin
+  });
+  document.body.appendChild(f);
+  window.addEventListener('message', function (e) {
+    if (e.source === f.contentWindow && e.origin === YT) { if (parent !== window) parent.postMessage(e.data, '*'); }
+    else if (e.source === parent && f.contentWindow) f.contentWindow.postMessage(e.data, YT);
+  });
+})();
+</script>
+</body>
+</html>
