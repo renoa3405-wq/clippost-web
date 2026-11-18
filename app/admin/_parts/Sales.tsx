@@ -31,12 +31,27 @@ function guessHeader(rows: Cell[][]) {
   return best;
 }
 
+// Kolom yang paling cocok per isian. Ekspor Lynk: "Buyer Email" (bukan "Affiliator email"), "Total" (sudah dipotong
+// voucher & notif fee, bukan "sub total"), "Buyer Name", "Buyer Phone", "Ref" (bukan "PayPal Ref").
+const PREFER: Partial<Record<Field, RegExp[]>> = {
+  email: [/buyer|pembeli|customer/i],
+  name: [/buyer|pembeli|customer/i],
+  phone: [/buyer|pembeli|customer/i],
+  amount: [/^\s*total\s*$/i, /grand/i],
+  ref_id: [/^\s*ref\s*$/i],
+  product: [/judul|title|nama produk/i],
+};
+const AVOID = /affiliat|paypal|voucher|fee|ongkir|shipping|addon|sub\s*total/i;
+
 function guessMap(header: Cell[]): Record<Field, number> {
   const used = new Set<number>();
   const map = {} as Record<Field, number>;
+  const text = (c: Cell) => (typeof c === "string" ? c : "");
   for (const [f, , re] of FIELDS) {
-    let idx = header.findIndex((c, i) => !used.has(i) && typeof c === "string" && re.test(c) && !(f === "name" && /produk|product|item/i.test(c)));
-    if (f === "amount") { const g = header.findIndex((c, i) => !used.has(i) && typeof c === "string" && /grand|total/i.test(c)); if (g >= 0) idx = g; }
+    const ok = (c: Cell, i: number) => !used.has(i) && re.test(text(c)) && !AVOID.test(text(c)) && !(f === "name" && /produk|product|item|judul/i.test(text(c)));
+    let idx = -1;
+    for (const p of PREFER[f] ?? []) { idx = header.findIndex((c, i) => ok(c, i) && p.test(text(c))); if (idx >= 0) break; }
+    if (idx < 0) idx = header.findIndex(ok);
     map[f] = idx;
     if (idx >= 0) used.add(idx);
   }
@@ -109,7 +124,7 @@ export function Sales({ password }: { password: string }) {
   );
 }
 
-type Preview = { fresh: number; already: number; dupInFile: number; sribuklip: number; afterCutoff: number; invalid: number; byKind: Record<string, { n: number; amount: number }>; cutoff: string | null };
+type Preview = { fresh: number; already: number; dupInFile: number; notClippost: number; afterCutoff: number; invalid: number; byKind: Record<string, { n: number; amount: number }>; cutoff: string | null };
 
 function Import({ password, onDone }: { password: string; onDone: () => void }) {
   const api = useApi(password);
@@ -215,7 +230,7 @@ function Import({ password, onDone }: { password: string; onDone: () => void }) 
                 {Object.entries(preview.byKind).map(([k, v]) => <li key={k}>{KIND[k] ?? k}: {num(v.n)} order · {rupiah(v.amount)}</li>)}
               </ul>
               <div className="mt-1 text-xs text-slate-500">
-                Dilewati: {num(preview.already)} sudah ada · {num(preview.sribuklip)} produk Sribuklip · {num(preview.dupInFile)} dobel di file · {num(preview.invalid)} tidak valid
+                Dilewati: {num(preview.already)} sudah ada · {num(preview.notClippost)} bukan produk ClipPost (Sribuklip / tes) · {num(preview.dupInFile)} dobel di file · {num(preview.invalid)} tidak valid
                 {preview.afterCutoff ? ` · ${num(preview.afterCutoff)} sesudah ${fmt(preview.cutoff)} (sudah dicatat otomatis)` : ""}
               </div>
             </div>

@@ -72,7 +72,8 @@ function orderKind(title: string): string {
   if (isPasteLink(title)) return 'paste_link';
   if (isUpdate(title)) return 'update';
   const upper = title.toUpperCase();
-  return upper.includes('BASIC') ? 'basic' : upper.includes('PRO') ? 'pro' : 'lain';
+  if (upper.includes('BASIC')) return 'basic';
+  return upper.includes('PRO') || /sekali\s*bayar/i.test(title) ? 'pro' : 'lain';
 }
 
 async function recordOrder(body: any, productTitle: string) {

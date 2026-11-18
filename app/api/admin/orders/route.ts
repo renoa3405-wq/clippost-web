@@ -1,5 +1,5 @@
 // Order Lynk: daftar order (untuk dicocokkan dengan Lynk) dan impor ekspor xlsx Lynk (diparsing di browser).
-// Impor: produk Sribuklip dilewati, order yang sudah dicatat webhook tidak dihitung dua kali, tanggal bayar New Update
+// Impor: produk Sribuklip dan produk tes dilewati, order yang sudah dicatat webhook tidak dihitung dua kali, tanggal bayar New Update
 // diisi dari order, dan nomor WA masuk daftar Broadcast (status "belum").
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
@@ -14,13 +14,17 @@ function normalizePhone(raw: string | null | undefined): string | null {
   return /^628\d{7,12}$/.test(d) ? d : null;
 }
 
-// Sama dengan webhook Lynk
+// Sama dengan webhook Lynk, ditambah nama produk lama: "CLIPPOST android [SEKALI BAYAR]", "CLIPPOST android",
+// "AyoClip android/mobile", "CANCLIP PRO" = sekali bayar seumur hidup (di database tercatat Pro). null = bukan produk
+// ClipPost (Sribuklip, atau produk tes seperti "test", "wdregrwge", "Bukan untuk dibeli") dan tidak dicatat.
 function orderKind(title: string): string | null {
   if (/sribuklip/i.test(title)) return null;
   if (/tempel\s*link|paste\s*link/i.test(title)) return "paste_link";
-  if (/\bupdate\b/i.test(title)) return "update";
+  if (/update/i.test(title)) return "update";
   const upper = title.toUpperCase();
-  return upper.includes("BASIC") ? "basic" : upper.includes("PRO") ? "pro" : "lain";
+  if (upper.includes("BASIC")) return "basic";
+  if (upper.includes("PRO") || /sekali\s*bayar|clippost|ayoclip|canclip/i.test(title)) return "pro";
+  return null;
 }
 
 export async function GET(req: Request) {
@@ -49,14 +53,14 @@ export async function POST(req: Request) {
     const cutoff = first ? new Date(first.created_at).getTime() : Infinity;
 
     const out: Record<string, unknown>[] = [];
-    let sribuklip = 0, afterCutoff = 0, invalid = 0;
+    let notClippost = 0, afterCutoff = 0, invalid = 0;
     for (const r of body.rows) {
       const t = new Date(r.created_at).getTime();
       const product = String(r.product ?? "").trim();
       const amount = Math.round(Number(r.amount));
       if (!Number.isFinite(t) || !product || !Number.isFinite(amount) || amount < 0) { invalid++; continue; }
       const kind = orderKind(product);
-      if (!kind) { sribuklip++; continue; }
+      if (!kind) { notClippost++; continue; }
       if (t >= cutoff) { afterCutoff++; continue; }
       const email = String(r.email ?? "").trim().toLowerCase() || null;
       const ref = String(r.ref_id ?? "").trim() ||
@@ -74,7 +78,7 @@ export async function POST(req: Request) {
       const fresh = unique.filter((o) => !have.has(o.ref_id as string));
       const byKind: Record<string, { n: number; amount: number }> = {};
       for (const o of fresh) { const k = o.kind as string; byKind[k] = { n: (byKind[k]?.n ?? 0) + 1, amount: (byKind[k]?.amount ?? 0) + (o.amount as number) }; }
-      return NextResponse.json({ fresh: fresh.length, already: unique.length - fresh.length, dupInFile, sribuklip, afterCutoff, invalid, byKind,
+      return NextResponse.json({ fresh: fresh.length, already: unique.length - fresh.length, dupInFile, notClippost, afterCutoff, invalid, byKind,
         cutoff: Number.isFinite(cutoff) ? new Date(cutoff).toISOString() : null });
     }
 
@@ -101,6 +105,6 @@ export async function POST(req: Request) {
       if (error) throw error;
       contactsAdded += data?.length ?? 0;
     }
-    return NextResponse.json({ added, already: unique.length - added, dupInFile, sribuklip, afterCutoff, invalid, contactsAdded });
+    return NextResponse.json({ added, already: unique.length - added, dupInFile, notClippost, afterCutoff, invalid, contactsAdded });
   } catch (e) { return fail(e); }
 }
