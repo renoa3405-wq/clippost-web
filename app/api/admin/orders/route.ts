@@ -20,7 +20,7 @@ function normalizePhone(raw: string | null | undefined): string | null {
 function orderKind(title: string): string | null {
   if (/sribuklip/i.test(title)) return null;
   if (/tempel\s*link|paste\s*link/i.test(title)) return "paste_link";
-  if (/update/i.test(title)) return "update";
+  if (/\bupdate\b/i.test(title)) return "update";
   const upper = title.toUpperCase();
   if (upper.includes("BASIC")) return "basic";
   if (upper.includes("PRO") || /sekali\s*bayar|clippost|ayoclip|canclip/i.test(title)) return "pro";
@@ -73,8 +73,13 @@ export async function POST(req: Request) {
     const unique = [...new Map(out.map((o) => [o.ref_id as string, o])).values()];
     const dupInFile = out.length - unique.length;
     if (body.dryRun) {
-      const { data: existing } = await db.from("orders").select("ref_id").in("ref_id", unique.slice(0, 5000).map((o) => o.ref_id as string));
-      const have = new Set((existing ?? []).map((e) => e.ref_id));
+      // Dicek per 200 ref (daftar panjang dalam satu permintaan terlalu besar untuk URL)
+      const have = new Set<string>();
+      for (let i = 0; i < unique.length; i += 200) {
+        const { data: existing, error } = await db.from("orders").select("ref_id").in("ref_id", unique.slice(i, i + 200).map((o) => o.ref_id as string));
+        if (error) throw error;
+        for (const e of existing ?? []) have.add(e.ref_id);
+      }
       const fresh = unique.filter((o) => !have.has(o.ref_id as string));
       const byKind: Record<string, { n: number; amount: number }> = {};
       for (const o of fresh) { const k = o.kind as string; byKind[k] = { n: (byKind[k]?.n ?? 0) + 1, amount: (byKind[k]?.amount ?? 0) + (o.amount as number) }; }
